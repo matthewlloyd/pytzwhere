@@ -13,12 +13,11 @@ import pickle
 class tzwhere(object):
     SHORTCUT_DEGREES_LATITUDE = 1
     SHORTCUT_DEGREES_LONGITUDE = 1
-    # By default, use the data file in our package directory
-    DEFAULT_FILENAME = os.path.join(os.path.dirname(__file__),
-        'tz_world_compact.json')
 
-    def __init__(self, filename=DEFAULT_FILENAME, read_pickle=False,
-            write_pickle=False):
+    def __init__(self, filename=None, read_pickle=False, write_pickle=False):
+        # By default, use the data file in our package directory
+        if filename is None:
+            filename = os.path.join(os.path.dirname(__file__), 'tz_world_compact.json')
 
         input_file = open(filename, 'r')
 

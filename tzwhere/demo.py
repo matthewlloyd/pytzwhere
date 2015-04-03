@@ -2,7 +2,7 @@
 
 import datetime
 import argparse
-from . import tzwhere
+from tzwhere import tzwhere
 
 
 def main():
