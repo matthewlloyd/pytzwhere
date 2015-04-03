@@ -32,6 +32,8 @@ def main():
     print w.tzNameAt(float(61.17), float(-150.02)) #Anchorage, AK
     print w.tzNameAt(float(44.12), float(-123.22)) #Eugene, OR
     print w.tzNameAt(float(42.652647), float(-73.756371)) #Albany, NY
+    print w.tzNameAt(float(42.358), float(-71.060)) #Boston, MA
+    print w.tzNameAt(float(42.358), float(-70.000), find_closest=True) #Boston, MA, in the ocean to the East
 
 
 if __name__ == "__main__":

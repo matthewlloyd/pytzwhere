@@ -8,6 +8,8 @@ import datetime
 import math
 import os
 import pickle
+from collections import defaultdict
+from shapely.geometry import Point, Polygon
 
 
 class tzwhere(object):
@@ -36,100 +38,76 @@ class tzwhere(object):
             pickle.dump(featureCollection, f, pickle.HIGHEST_PROTOCOL)
             f.close()
 
-
-        self.timezoneNamesToPolygons = {}
+        self.timezoneNamesToPolygons = defaultdict(tuple)
         for feature in featureCollection['features']:
-
+            if feature['geometry']['type'] != 'Polygon':
+                continue
+            polys = feature['geometry']['coordinates']
+            if not polys:
+                continue
             tzname = feature['properties']['TZID']
-            if feature['geometry']['type'] == 'Polygon':
-                polys = feature['geometry']['coordinates']
-                if polys and not (tzname in self.timezoneNamesToPolygons):
-                    self.timezoneNamesToPolygons[tzname] = []
 
-                for raw_poly in polys:
-                    #WPS84 coordinates are [long, lat], while many conventions are [lat, long]
-                    #Our data is in WPS84.  Convert to an explicit format which geolib likes.
-                    assert len(raw_poly)%2 == 0
-                    poly = []
-                    while raw_poly:
-                        lat = raw_poly.pop()
-                        lng = raw_poly.pop()
-                        poly.append({'lat': lat, 'lng': lng})
-                    self.timezoneNamesToPolygons[tzname].append(tuple(poly))
+            all_polys = []
+            for raw_poly in polys:
+                # WPS84 coordinates are [long, lat], while many conventions are [lat, long]
+                assert len(raw_poly) % 2 == 0
+                poly = []
+                for i in xrange(0, len(raw_poly), 2):
+                    lng, lat = raw_poly[i], raw_poly[i + 1]
+                    poly.append( (lat, lng) )
+                all_polys.append(tuple(poly))
+            self.timezoneNamesToPolygons[tzname] += tuple(all_polys)
 
-        self.timezoneLongitudeShortcuts = {};
-        self.timezoneLatitudeShortcuts = {};
+        self.timezoneLongitudeShortcuts = [defaultdict(list) for i in xrange(360)]
+        self.timezoneLatitudeShortcuts = [defaultdict(list) for i in xrange(180)]
         for tzname in self.timezoneNamesToPolygons:
             for polyIndex, poly in enumerate(self.timezoneNamesToPolygons[tzname]):
-                lats = [x['lat'] for x in poly]
-                lngs = [x['lng'] for x in poly]
-                minLng = math.floor(min(lngs) / self.SHORTCUT_DEGREES_LONGITUDE) * self.SHORTCUT_DEGREES_LONGITUDE;
-                maxLng = math.floor(max(lngs) / self.SHORTCUT_DEGREES_LONGITUDE) * self.SHORTCUT_DEGREES_LONGITUDE;
-                minLat = math.floor(min(lats) / self.SHORTCUT_DEGREES_LATITUDE) * self.SHORTCUT_DEGREES_LATITUDE;
-                maxLat = math.floor(max(lats) / self.SHORTCUT_DEGREES_LATITUDE) * self.SHORTCUT_DEGREES_LATITUDE;
-                degree = minLng
-                while degree <= maxLng:
-                    if degree not in self.timezoneLongitudeShortcuts:
-                        self.timezoneLongitudeShortcuts[degree] = {}
+                lngs = [x[1] for x in poly]
+                minLng, maxLng = map(self._to_shortcut_lon, [min(lngs), max(lngs)])
+                for i in xrange(minLng, maxLng + 1):
+                    self.timezoneLongitudeShortcuts[i][tzname].append(polyIndex)
 
-                    if tzname not in self.timezoneLongitudeShortcuts[degree]:
-                        self.timezoneLongitudeShortcuts[degree][tzname] = []
+                lats = [x[0] for x in poly]
+                minLat, maxLat = map(self._to_shortcut_lat, [min(lats), max(lats)])
+                for i in xrange(minLat, maxLat + 1):
+                    self.timezoneLatitudeShortcuts[i][tzname].append(polyIndex)
 
-                    self.timezoneLongitudeShortcuts[degree][tzname].append(polyIndex)
-                    degree = degree + self.SHORTCUT_DEGREES_LONGITUDE
+        # Convert things to tuples to save memory.
+        for i in xrange(len(self.timezoneLatitudeShortcuts)):
+            for tzname in self.timezoneLatitudeShortcuts[i]:
+                self.timezoneLatitudeShortcuts[i][tzname] = tuple(self.timezoneLatitudeShortcuts[i][tzname])
+        for i in xrange(len(self.timezoneLongitudeShortcuts)):
+            for tzname in self.timezoneLongitudeShortcuts[i]:
+                self.timezoneLongitudeShortcuts[i][tzname] = tuple(self.timezoneLongitudeShortcuts[i][tzname])
 
-                degree = minLat
-                while degree <= maxLat:
-                    if degree not in self.timezoneLatitudeShortcuts:
-                        self.timezoneLatitudeShortcuts[degree] = {}
+    def _to_shortcut_lat(self, deg):
+        return int((deg + 90.0) / self.SHORTCUT_DEGREES_LATITUDE)
 
-                    if tzname not in self.timezoneLatitudeShortcuts[degree]:
-                        self.timezoneLatitudeShortcuts[degree][tzname] = []
+    def _to_shortcut_lon(self, deg):
+        return int((deg + 180.0) / self.SHORTCUT_DEGREES_LONGITUDE)
 
-                    self.timezoneLatitudeShortcuts[degree][tzname].append(polyIndex)
-                    degree = degree + self.SHORTCUT_DEGREES_LATITUDE
-
-        #convert things to tuples to save memory
-        for tzname in self.timezoneNamesToPolygons.keys():
-            self.timezoneNamesToPolygons[tzname] = tuple(self.timezoneNamesToPolygons[tzname])
-        for degree in self.timezoneLatitudeShortcuts:
-            for tzname in self.timezoneLatitudeShortcuts[degree].keys():
-                self.timezoneLatitudeShortcuts[degree][tzname] = tuple(self.timezoneLatitudeShortcuts[degree][tzname])
-        for degree in self.timezoneLongitudeShortcuts.keys():
-            for tzname in self.timezoneLongitudeShortcuts[degree].keys():
-                self.timezoneLongitudeShortcuts[degree][tzname] = tuple(self.timezoneLongitudeShortcuts[degree][tzname])
-
-    def _point_inside_polygon(self, x, y, poly):
-        n = len(poly)
-        inside =False
-
-        p1x, p1y = poly[0]['lng'], poly[0]['lat']
-        for i in range(n+1):
-            p2x,p2y = poly[i % n]['lng'], poly[i % n]['lat']
-            if y > min(p1y,p2y):
-                if y <= max(p1y,p2y):
-                    if x <= max(p1x,p2x):
-                        if p1y != p2y:
-                            xinters = (y-p1y)*(p2x-p1x)/(p2y-p1y)+p1x
-                        if p1x == p2x or x <= xinters:
-                            inside = not inside
-            p1x,p1y = p2x,p2y
-
-        return inside
-
-    def tzNameAt(self, latitude, longitude):
-        latTzOptions = self.timezoneLatitudeShortcuts[math.floor(latitude / self.SHORTCUT_DEGREES_LATITUDE) * self.SHORTCUT_DEGREES_LATITUDE]
-        latSet = set(latTzOptions.keys());
-        lngTzOptions = self.timezoneLongitudeShortcuts[math.floor(longitude / self.SHORTCUT_DEGREES_LONGITUDE) * self.SHORTCUT_DEGREES_LONGITUDE]
+    def tzNameAt(self, latitude, longitude, find_closest=False):
+        latTzOptions = self.timezoneLatitudeShortcuts[self._to_shortcut_lat(latitude)]
+        latSet = set(latTzOptions.keys())
+        lngTzOptions = self.timezoneLongitudeShortcuts[self._to_shortcut_lon(longitude)]
         lngSet = set(lngTzOptions.keys())
-        possibleTimezones = lngSet.intersection(latSet);
-        if possibleTimezones:
-            if False and len(possibleTimezones) == 1:
-                return possibleTimezones.pop()
-            else:
-                for tzname in possibleTimezones:
-                    polyIndices = set(latTzOptions[tzname]).intersection(set(lngTzOptions[tzname]));
-                    for polyIndex in polyIndices:
-                        poly = self.timezoneNamesToPolygons[tzname][polyIndex];
-                        if self._point_inside_polygon(longitude, latitude, poly):
-                            return tzname
+        possibleTimezones = lngSet.intersection(latSet)
+        closest_tz = None
+        closest_dist = None
+        point = Point(latitude, longitude)
+        for tzname in possibleTimezones:
+            # lazily convert to Polygon instances, which are expensive to construct
+            if isinstance(self.timezoneNamesToPolygons[tzname][0], tuple):
+                self.timezoneNamesToPolygons[tzname] = map(lambda p: Polygon(p), self.timezoneNamesToPolygons[tzname])
+            polyIndices = set(latTzOptions[tzname]).intersection(set(lngTzOptions[tzname]))
+            for polyIndex in polyIndices:
+                poly = self.timezoneNamesToPolygons[tzname][polyIndex]
+                if poly.contains(point):
+                    return tzname
+                if find_closest:
+                    dist = poly.distance(point)
+                    if closest_dist is None or dist < closest_dist:
+                        closest_dist = dist
+                        closest_tz = tzname
+        if find_closest:
+            return closest_tz
